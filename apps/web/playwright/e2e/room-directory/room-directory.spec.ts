@@ -10,6 +10,7 @@ import { rejectToast } from "@element-hq/element-web-playwright-common";
 
 import type { Preset, Visibility } from "matrix-js-sdk/src/matrix";
 import { test, expect } from "../../element-web-test";
+import { SettingLevel } from "../../../src/settings/SettingLevel";
 
 test.describe("Room Directory", () => {
     test.skip(({ homeserverType }) => homeserverType === "pinecone", "Pinecone's /publicRooms API takes forever");
@@ -93,4 +94,54 @@ test.describe("Room Directory", () => {
             await expect(page).toHaveURL(`/#/room/#test1234:${user.homeServer}`);
         },
     );
+
+    test("should keep public room results legible when hovered in high contrast theme", async ({
+        page,
+        app,
+        user,
+        bot,
+    }) => {
+        // Regression test for https://github.com/element-hq/element-web/issues/34213
+        // In the light-high-contrast theme, hovering a public room result in the
+        // "Explore public rooms" dialog rendered light text on a light background.
+        const name = "This is a public room";
+        await bot.createRoom({
+            visibility: "public" as Visibility,
+            name,
+            room_alias_name: "test1234",
+        });
+
+        await rejectToast(page, "Verify this device");
+
+        // Disable system theme in case ThemeWatcher enables it automatically,
+        // so that the high contrast theme can be enabled
+        await app.settings.setValue("use_system_theme", null, SettingLevel.DEVICE, false);
+        await app.settings.setValue("theme", null, SettingLevel.ACCOUNT, "light-high-contrast");
+
+        await page.getByRole("button", { name: "Explore rooms" }).click();
+
+        const dialog = page.locator(".mx_SpotlightDialog");
+        await dialog.getByRole("textbox", { name: "Search" }).fill("test1234");
+
+        const result = dialog
+            .getByText(name)
+            .locator("xpath=ancestor::*[contains(@class, 'mx_SpotlightDialog_option')]");
+        await expect(result).toBeVisible();
+        await result.hover();
+
+        const roomNameLocator = dialog.locator(".mx_SpotlightDialog_result_publicRoomName", { hasText: name });
+        const { color, backgroundColor } = await roomNameLocator.evaluate((el) => {
+            const style = window.getComputedStyle(el);
+            const bgEl = el.closest(".mx_SpotlightDialog_option") as HTMLElement;
+            return {
+                color: style.color,
+                backgroundColor: window.getComputedStyle(bgEl).backgroundColor,
+            };
+        });
+
+        // The text colour must differ from the hovered background colour so the text stays legible.
+        expect(color).not.toEqual(backgroundColor);
+        // The text should render as dark (near-black), not white, against the light hover background.
+        expect(color).not.toBe("rgb(255, 255, 255)");
+    });
 });
